@@ -41,10 +41,43 @@ class StateManager:
                 time.sleep(1) # Check every second
 
     def _renew_lease(self):
-        """Renew the leader lease in Redis."""
-        # Use SET with EX to renew and keep the TTL
-        self.redis_client.set(config.LEADER_LEASE_KEY, self.broker_address, ex=config.LEASE_TIMEOUT_SECONDS)
-        print(f"[{self.broker_address}] Leader lease renewed.")
+        """Renew the leader lease only if we still own it."""
+
+        renew_script = """
+        if redis.call("GET", KEYS[1]) == ARGV[1] then
+            return redis.call(
+                "SET",
+                KEYS[1],
+                ARGV[1],
+                "EX",
+                ARGV[2]
+            )
+        else
+            return nil
+        end
+        """
+
+        result = self.redis_client.eval(
+            renew_script,
+            1,
+            config.LEADER_LEASE_KEY,
+            self.broker_address,
+            config.LEASE_TIMEOUT_SECONDS
+        )
+
+        if result:
+            print(f"[{self.broker_address}] Leader lease renewed.")
+        else:
+            # We no longer own the lease.
+            print(
+                f"[{self.broker_address}] "
+                "Lease renewal failed! Demoting to follower."
+            )
+
+            self.role = "follower"
+            self.leader_address = self.redis_client.get(
+                config.LEADER_LEASE_KEY
+            )
 
 
     def _try_to_become_leader(self):
